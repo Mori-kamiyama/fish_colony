@@ -10,6 +10,10 @@ const FISH_AMOUNT: usize = 100;
 const FISH_VEC: f32 = 1.0;
 const FISH_SIZE: f32 = 7.0;
 
+
+const WIDTH:f32 = 400.0;
+const HEIGHT:f32= 300.0;
+
 // 魚の個々を管理する構造体
 struct Fish {
     pos: Vec2,   // 座標
@@ -27,7 +31,7 @@ fn model(app: &App) -> Model {
 
     app.new_window()
         .title("Fishes")
-        .size(800, 600)
+        .size((WIDTH * 2.0) as u32, (HEIGHT * 2.0) as u32)
         .view(view)
         .build()
         .unwrap();
@@ -37,8 +41,8 @@ fn model(app: &App) -> Model {
     for _ in 0..FISH_AMOUNT {
         fishes.push(Fish {
             pos: Vec2::new(
-                rng.gen_range(-400.0..400.0),
-                rng.gen_range(-300.0..300.0),
+                rng.gen_range(-WIDTH..WIDTH),
+                rng.gen_range(-HEIGHT..HEIGHT),
             ),
             vec: FISH_VEC,
             theta: rng.gen_range(0.0..(PI * 2.0)),
@@ -49,6 +53,8 @@ fn model(app: &App) -> Model {
 }
 
 fn update(_app: &App, model: &mut Model, _update: Update) {
+    let mut rng = thread_rng();
+
     // 各ルールのパラメータ設定
     let coh_min = 20.0;
     let coh_max = 50.0;
@@ -77,79 +83,85 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
         let mut a = 0;
         let mut s = 0;
 
-        // 他の魚との距離をもとに各ルールを計算
-        for j in 0..FISH_AMOUNT {
-            if i == j {
-                continue;
+        if rng.gen_range(0..10) < 7 {
+            // 他の魚との距離をもとに各ルールを計算
+            for j in 0..FISH_AMOUNT {
+                if i == j {
+                    continue;
+                }
+                let other_pos = positions[j];
+                let other_theta = thetas[j];
+                let dis = pos.distance(other_pos);
+
+                // 【凝集】一定距離内にある魚の重心を求める
+                if dis > coh_min && dis < coh_max {
+                    coh_sum += other_pos;
+                    c += 1;
+                }
+                // 【整列】一定距離内の魚の進行方向（sin, cos）を平均する
+                if dis > ali_min && dis < ali_max {
+                    ali_sum += vec2(other_theta.sin(), other_theta.cos());
+                    a += 1;
+                }
+                // 【分離】近すぎる魚から離れる方向を計算する
+                if dis > sep_min && dis < sep_max {
+                    sep_sum += (pos - other_pos) / dis;
+                    s += 1;
+                }
             }
 
-            let other_pos = positions[j];
-            let other_theta = thetas[j];
-            let dis = pos.distance(other_pos);
+            // 現在の向き（sin, cos）を初期値とする
+            let mut desired_direction = vec2(theta.sin(), theta.cos());
 
-            // 【凝集】一定距離内にある魚の重心を求める
-            if dis > coh_min && dis < coh_max {
-                coh_sum += other_pos;
-                c += 1;
+            // 凝集ルールの影響を加算
+            if c > 0 {
+                let center = coh_sum / c as f32;
+                let cohesion_vector = (center - pos).normalize();
+                desired_direction += cohesion_vector * coh_weight;
             }
-            // 【整列】一定距離内の魚の進行方向（sin, cos）を平均する
-            if dis > ali_min && dis < ali_max {
-                ali_sum += vec2(other_theta.sin(), other_theta.cos());
-                a += 1;
+
+            // 整列ルールの影響を加算
+            if a > 0 {
+                let alignment_vector = (ali_sum / a as f32).normalize();
+                desired_direction += alignment_vector * ali_weight;
             }
-            // 【分離】近すぎる魚から離れる方向を計算する
-            if dis > sep_min && dis < sep_max {
-                sep_sum += (pos - other_pos) / dis;
-                s += 1;
+
+            // 分離ルールの影響を加算（条件を s > 0 に修正）
+            if s > 0 {
+                let separation_vector = if sep_sum.length() > 0.0 {
+                    sep_sum.normalize()
+                } else {
+                    vec2(0.0, 0.0)
+                };
+                desired_direction += separation_vector * sep_weight;
             }
+
+            // 描画や移動では sin, cos を使っているので、
+            // (x, y) = (sin(theta), cos(theta)) となるような theta を求める
+            model.fishes[i].theta = desired_direction.x.atan2(desired_direction.y);
+        } else {
+            model.fishes[i].theta = theta;
         }
 
-        // 現在の向き（sin, cos）を初期値とする
-        let mut desired_direction = vec2(theta.sin(), theta.cos());
 
-        // 凝集ルールの影響を加算
-        if c > 0 {
-            let center = coh_sum / c as f32;
-            let cohesion_vector = (center - pos).normalize();
-            desired_direction += cohesion_vector * coh_weight;
-        }
-
-        // 整列ルールの影響を加算
-        if a > 0 {
-            let alignment_vector = (ali_sum / a as f32).normalize();
-            desired_direction += alignment_vector * ali_weight;
-        }
-
-        // 分離ルールの影響を加算（条件を s > 0 に修正）
-        if s > 0 {
-            let separation_vector = if sep_sum.length() > 0.0 {
-                sep_sum.normalize()
-            } else {
-                vec2(0.0, 0.0)
-            };
-            desired_direction += separation_vector * sep_weight;
-        }
-
-        // 描画や移動では sin, cos を使っているので、
-        // (x, y) = (sin(theta), cos(theta)) となるような theta を求める
-        model.fishes[i].theta = desired_direction.x.atan2(desired_direction.y);
+        model.fishes[i].vec *= if rng.gen_range(0..2) == 1 {0.999} else {1.001};
 
         // 魚の位置を移動（速度は fish.vec で定義）
         model.fishes[i].pos.x += model.fishes[i].vec * model.fishes[i].theta.sin();
         model.fishes[i].pos.y += model.fishes[i].vec * model.fishes[i].theta.cos();
 
         // 画面外に出た場合のラッピング処理
-        if model.fishes[i].pos.y < -310.0 {
-            model.fishes[i].pos.y = 305.0;
+        if model.fishes[i].pos.y < -(HEIGHT + 10.0) {
+            model.fishes[i].pos.y = HEIGHT + 5.0;
         }
-        if model.fishes[i].pos.x > 410.0 {
-            model.fishes[i].pos.x = -405.0;
+        if model.fishes[i].pos.x > (WIDTH + 10.0) {
+            model.fishes[i].pos.x = -(WIDTH + 5.0);
         }
-        if model.fishes[i].pos.y > 310.0 {
-            model.fishes[i].pos.y = -305.0;
+        if model.fishes[i].pos.y > (HEIGHT + 10.0) {
+            model.fishes[i].pos.y = -(HEIGHT + 5.0);
         }
-        if model.fishes[i].pos.x < -410.0 {
-            model.fishes[i].pos.x = 405.0;
+        if model.fishes[i].pos.x < -(WIDTH + 10.0) {
+            model.fishes[i].pos.x = WIDTH + 5.0;
         }
     }
 }
